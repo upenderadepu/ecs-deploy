@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Setup default values for variables
-VERSION="3.10.0"
+VERSION="3.10.19"
 CLUSTER=false
 SERVICE=false
 TASK_DEFINITION=false
@@ -43,12 +43,11 @@ Required arguments:
     -k | --aws-access-key        AWS Access Key ID. May also be set as environment variable AWS_ACCESS_KEY_ID
     -s | --aws-secret-key        AWS Secret Access Key. May also be set as environment variable AWS_SECRET_ACCESS_KEY
     -r | --region                AWS Region Name. May also be set as environment variable AWS_DEFAULT_REGION
-    -p | --profile               AWS Profile to use - If you set this aws-access-key, aws-secret-key and region are needed
+    -p | --profile               AWS Profile to use - If you set this, then aws-access-key, aws-secret-key and region are not needed
     -c | --cluster               Name of ECS cluster
     -i | --image                 Name of Docker image to run, ex: repo/image:latest
                                  Format: [domain][:port][/repo][/][image][:tag]
-                                 Examples: mariadb, mariadb:latest, silintl/mariadb,
-                                           silintl/mariadb:latest, private.registry.com:8000/repo/image:tag
+                                 Examples: mariadb, mariadb:latest, private.registry.com:8000/repo/image:tag
     --aws-instance-profile       Use the IAM role associated with this instance
 
 Optional arguments:
@@ -252,7 +251,7 @@ function parseImageName() {
       fi
     else
       # check if using root level repo with format like mariadb or mariadb:latest
-      rootRepoRegex="^([a-zA-Z0-9\-]+):?([a-zA-Z0-9\.\-]+)?$"
+      rootRepoRegex="^([a-zA-Z0-9\-]+):?([a-zA-Z0-9\.\-_]+)?$"
       if [[ $IMAGE =~ $rootRepoRegex ]]; then
         img=${BASH_REMATCH[1]}
         if [[ "x$img" == "x" ]]; then
@@ -375,7 +374,7 @@ function createNewTaskDefJson() {
 
     # Some options in task definition should only be included in new definition if present in
     # current definition. If found in current definition, append to JQ filter.
-    CONDITIONAL_OPTIONS=(networkMode taskRoleArn placementConstraints executionRoleArn)
+    CONDITIONAL_OPTIONS=(networkMode taskRoleArn placementConstraints executionRoleArn runtimePlatform ephemeralStorage proxyConfiguration)
     for i in "${CONDITIONAL_OPTIONS[@]}"; do
       re=".*${i}.*"
       if [[ "$DEF" =~ $re ]]; then
@@ -405,7 +404,7 @@ function createNewTaskDefJson() {
 
 function registerNewTaskDefinition() {
     # Register the new task definition, and store its ARN
-    if [[ "$COPY_TASK_DEFINITION_TAGS" == true && "$TASK_DEFINITION_TAGS" != false ]]; then
+    if [[ "$COPY_TASK_DEFINITION_TAGS" == true && "$TASK_DEFINITION_TAGS" != false && "$TASK_DEFINITION_TAGS" != "[]" ]]; then
       NEW_TASKDEF=`$AWS_ECS register-task-definition --cli-input-json "$NEW_DEF" --tags "$TASK_DEFINITION_TAGS" | jq -r .taskDefinition.taskDefinitionArn`
     else
       NEW_TASKDEF=`$AWS_ECS register-task-definition --cli-input-json "$NEW_DEF" | jq -r .taskDefinition.taskDefinitionArn`
@@ -425,10 +424,10 @@ function updateServiceForceNewDeployment() {
 function updateService() {
     if [[ $(echo ${NEW_DEF} | jq ".containerDefinitions[0].healthCheck != null") == true ]]; then
         checkFieldName="healthStatus"
-        checkFieldValue="HEALTHY"
+        checkFieldValue='"HEALTHY"'
     else
         checkFieldName="lastStatus"
-        checkFieldValue="RUNNING"
+        checkFieldValue='"RUNNING"'
     fi
 
     UPDATE_SERVICE_SUCCESS="false"
@@ -521,7 +520,7 @@ function waitForGreenDeployment {
   do
     NUM_DEPLOYMENTS=$($AWS_ECS describe-services --services $SERVICE --cluster $CLUSTER | jq "[.services[].deployments[]] | length")
 
-    # Wait to see if more than 1 deployment stays running
+    # Wait until 1 deployment stays running
     # If the wait time has passed, we need to roll back
     if [ $NUM_DEPLOYMENTS -eq 1 ]; then
       echo "Service deployment successful."
